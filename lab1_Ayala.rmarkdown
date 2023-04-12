@@ -1,0 +1,226 @@
+---
+title: "Lab 1 : NYT API"
+author: "Atahualpa Ayala Gomez"
+format: html
+editor: visual
+---
+
+
+1.  Create a free New York Times account (<https://developer.nytimes.com/get-started>)
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(jsonlite) #convert results from API queries into R-friendly formats 
+library(tidyverse)
+library(tidytext) #text data management and analysis
+library(ggplot2) #plot word frequencies and publication dates
+
+
+#assign API key.  When you create a NYT Dev account, you will be given a key
+API_KEY <- "GDvcSNRdr6yjqI1POqkAF4Zw46bZAHtW"
+```
+
+
+2.  Pick an interesting environmental key word(s) and use the {jsonlite} package to query the API. Pick something high profile enough and over a large enough time frame that your query yields enough articles for an interesting examination.
+
+
+```{r api, eval = FALSE}
+
+# t <- fromJSON("http://api.nytimes.com/svc/search/v2/articlesearch.json?q=haaland&api-key=",API_KEY,flatten = TRUE) 
+#create the query url
+url <- paste("http://api.nytimes.com/svc/search/v2/articlesearch.json?q=deforestation&api-key=",API_KEY, sep ="")
+
+#send the request, receive the response, and flatten
+t <- fromJSON(url, flatten = T)
+```
+
+```{r, eval = FALSE}
+#what type of object is t?
+class(t) 
+
+#make a dataframe to be easy to use
+t <- data.frame(t)
+
+# how big is it?
+dim(t)
+
+# what variables are we working with? we donot have accest to the full text, are more by parts. 
+names(t)
+
+```
+
+
+Setting parameters
+
+
+```{r}
+term1 <- "deforestation"
+begin_date <- "20210120"
+end_date <- "20230410"
+
+# Construct the query url using API operators
+baseurl <- paste0("http://api.nytimes.com/svc/search/v2/articlesearch.json?q=",term1,"&begin_date=",begin_date,"&end_date=",end_date,"&facet_filter=true&api-key=","GDvcSNRdr6yjqI1POqkAF4Zw46bZAHtW", sep="")
+
+#check the query url
+baseurl
+```
+
+```{r}
+#dig into the JSON object to find the totals hits
+initialQuery <- fromJSON(baseurl)
+maxPages <- round((initialQuery$response$meta$hits[1]/10)-1)
+pages <- list()
+
+#loop, you can do 5 request per minute
+for(i in 0:maxPages){
+  nytSearch <- fromJSON(paste0(baseurl, "&page=", i), flatten = TRUE) %>%
+   data.frame() 
+  message("Retrieving page ", i)
+  pages[[i+1]] <- nytSearch 
+  Sys.sleep(20) 
+}
+ 
+```
+
+
+3.  Recreate the publications per day and word frequency plots using the first paragraph. This time filter on the response.docs.news_desk variable to winnow out irrelevant results.
+
+
+-   Convert JSON object into a data frame
+
+```{r}
+#converted each returned JSON object into a data frame
+class(nytSearch)
+class(pages)
+
+#needs bing the pages an dcreat a title from nytData creo el archivo para compartir
+nyt_df <- do.call("rbind", pages)
+saveRDS(nyt_df, "nyt_def.rds")
+
+#load the nyt_def data
+nytDat <- readRDS("data/nyt_def.rds")
+dim(nytDat)
+
+news_desk <- pages[[1]][["response.docs.news_desk"]]
+```
+
+```{r}
+#make the publications per day and word frequency plots
+date_plot <- nytDat %>%
+  mutate(pubDay=gsub("T.*","",response.docs.pub_date)) |>
+  group_by(pubDay) |>
+  summarise(count=n()) |>
+  filter(count >= 2) |>
+   head(20) |>
+  ggplot() +
+  geom_bar(aes(x=reorder(pubDay, count), y=count), stat="identity") +
+  coord_flip()+
+  labs(title = "Plublications per day that have the word deforestation")
+  
+date_plot
+```
+
+```{r}
+
+paragraph <- names(nytDat)[6]
+
+#tokenized data
+
+tokenized <- nytDat|>
+  unnest_tokens(word, paragraph)
+
+
+```
+
+```{r}
+
+ tokenized <- tokenized|>
+  anti_join(stop_words)
+
+tokenized|>
+  count(word, sort = TRUE)|>
+  filter(n >12)|>
+  mutate(word = reorder(word, n))|>
+  ggplot(aes(n, word))+
+  geom_col()+
+  labs(y = NULL)
+
+```
+
+
+4.  Make some (at least 3) transformations to the corpus (add context-specific stopword(s), stem a key term and its variants, remove numbers)
+
+
+```{r}
+
+# Clean the tokenized words
+clean_tokens <- str_remove_all(tokenized$word, "[:digit:]" )
+clean_tokens <- gsub("’s", "", clean_tokens)
+clean_tokens <- str_replace_all(clean_tokens, "forests" , "forest" )
+clean_tokens <- str_replace_all(clean_tokens, "forestss" , "forest" )
+clean_tokens <- str_remove_all(clean_tokens, "de")
+clean_tokens <- str_remove_all(clean_tokens, "janeiro")
+clean_tokens <- str_replace_all(clean_tokens, "rio", "rio_de_janeiro")
+
+
+
+# Create a data frame from the cleaned tokens and count the words
+clean_tokens %>%
+  as.data.frame() %>%
+  rename(word = ".") %>%
+  count(word, sort = TRUE) %>%
+  filter(n > 12) %>%
+  mutate(word = reorder(word, n))%>%
+  ggplot( aes(n, word)) +
+  geom_col() 
+```
+
+
+5.  Recreate the publications per day and word frequency plots using the headlines variable (response.docs.headline.main). Compare the distributions of word frequencies between the first paragraph and headlines. Do you see any difference?
+
+
+
+```{r}
+
+# Extract publication date and headline from NYT data
+headlines <- nytDat %>%
+  select(response.docs.pub_date, response.docs.headline.main) %>%
+  filter(str_detect(response.docs.headline.main, "Deforestation"))
+
+# Create plot of publications per day
+date_plot <- headlines %>%
+  mutate(pubDay = gsub("T.*","",response.docs.pub_date)) %>%
+  group_by(pubDay) %>%
+  summarise(count = n()) %>%
+  filter(count >= 1) %>%
+  head(20) %>%
+  ggplot() +
+  geom_bar(aes(x = reorder(pubDay, count), y = count), stat = "identity") +
+  coord_flip() +
+  labs(title = "Publications per day that have the word 'Deforestation'")
+
+date_plot
+```
+
+```{r}
+
+#make the publications per day and word frequency plots
+date_plot <- nytDat%>%
+  mutate(pubDay=gsub("T.*","",response.docs.pub_date)) |>
+  group_by(pubDay) |>
+  summarise(count=n()) |>
+  filter(count >= 1) |>
+  head(20) |>
+  ggplot() +
+  geom_bar(aes(x=reorder(pubDay, count), y=count), stat="identity") +
+  coord_flip()+
+  labs(title = "Plublications per day that have the word Deforestation")
+  
+date_plot
+
+```
+
+Compare the distributions of word frequencies between the first paragraph and headlines. Do you see any difference?
+Response: Yes, there are differences in the distributions of  frequencies of the  word "deforestation" between the first paragraph and headlines. The  frequency of "deforestation" is  be higher in the first paragraph compared to the headlines. This could be due to the fact that headlines are often limited in length and therefore may not include all of the key details of the article. Additionally, headlines are typically crafted to grab the reader's attention and may not necessarily reflect the full scope of the article's content
+
